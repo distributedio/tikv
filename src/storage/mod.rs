@@ -432,6 +432,14 @@ impl Display for Command {
                 ref ctx,
                 ref start_ts,
             } => write!(f, "kv::command::mvccbystartts {:?} | {:?}", start_ts, ctx),
+            Command::AcquireSpannerLock {
+                ref ctx, ref keys, ..
+            } => write!(
+                f,
+                "kv::command::acquirespannerlock keys({}) | {:?}",
+                keys.len(),
+                ctx
+            ),
         }
     }
 }
@@ -506,6 +514,7 @@ impl Command {
             Command::Pause { .. } => CommandKind::pause,
             Command::MvccByKey { .. } => CommandKind::key_mvcc,
             Command::MvccByStartTs { .. } => CommandKind::start_ts_mvcc,
+            Command::AcquireSpannerLock { .. } => CommandKind::acquire_pessimistic_lock,
         }
     }
 
@@ -525,6 +534,7 @@ impl Command {
             | Command::DeleteRange { .. }
             | Command::Pause { .. }
             | Command::MvccByKey { .. } => 0,
+            Command::AcquireSpannerLock { .. } => 0,
         }
     }
 
@@ -545,6 +555,7 @@ impl Command {
             | Command::Pause { ref ctx, .. }
             | Command::MvccByKey { ref ctx, .. }
             | Command::MvccByStartTs { ref ctx, .. } => ctx,
+            Command::AcquireSpannerLock { ref ctx, .. } => ctx,
         }
     }
 
@@ -565,6 +576,7 @@ impl Command {
             | Command::Pause { ref mut ctx, .. }
             | Command::MvccByKey { ref mut ctx, .. }
             | Command::MvccByStartTs { ref mut ctx, .. } => ctx,
+            Command::AcquireSpannerLock { ref mut ctx, .. } => ctx,
         }
     }
 

@@ -611,6 +611,13 @@ fn process_write_impl<S: Snapshot, L: LockMgr>(
             txn_id,
         } => {
             // nothing to do here
+            (
+                ProcessResult::MultiRes { results: vec![] },
+                vec![],
+                0,
+                ctx,
+                None,
+            )
         }
         Command::Commit {
             ctx,
