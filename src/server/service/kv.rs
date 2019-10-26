@@ -27,6 +27,7 @@ use kvproto::errorpb::{Error as RegionError, ServerIsBusy};
 use kvproto::kvrpcpb::{self, *};
 use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request as RaftRequest};
 use kvproto::raft_serverpb::*;
+use kvproto::spannerpb as spanner;
 use kvproto::tikvpb::*;
 use prometheus::HistogramTimer;
 use tikv_util::collections::HashMap;
@@ -39,6 +40,103 @@ const GC_WORKER_IS_BUSY: &str = "gc worker is busy";
 
 const GRPC_MSG_MAX_BATCH_SIZE: usize = 128;
 const GRPC_MSG_NOTIFY_SIZE: usize = 8;
+
+pub struct SpannerService<T: RaftStoreRouter + 'static, E: Engine, L: LockMgr> {
+    // For handling KV requests.
+    storage: Storage<E, L>,
+    // For handling raft messages.
+    ch: T,
+    // For handling snapshot.
+    snap_scheduler: Scheduler<SnapTask>,
+
+    thread_load: Arc<ThreadLoad>,
+}
+
+impl<T: RaftStoreRouter + 'static, E: Engine, L: LockMgr> SpannerService<T, E, L> {
+    pub fn new(
+        storage: Storage<E, L>,
+        ch: T,
+        snap_scheduler: Scheduler<SnapTask>,
+        thread_load: Arc<ThreadLoad>,
+    ) -> Self {
+        SpannerService {
+            storage,
+            ch,
+            snap_scheduler,
+            thread_load,
+        }
+    }
+    fn send_fail_status<M>(
+        &self,
+        ctx: RpcContext<'_>,
+        sink: UnarySink<M>,
+        err: Error,
+        code: RpcStatusCode,
+    ) {
+        let status = RpcStatus::new(code, Some(format!("{}", err)));
+        ctx.spawn(sink.fail(status).map_err(|_| ()));
+    }
+}
+
+impl<T: RaftStoreRouter + 'static, E: Engine, L: LockMgr> spanner::Spanner
+    for SpannerService<T, E, L>
+{
+    fn get(
+        &mut self,
+        ctx: RpcContext<'_>,
+        req: spanner::GetRequest,
+        sink: UnarySink<spanner::GetResponse>,
+    ) {
+        let readonly = req.read_only;
+        if readonly {
+            readonly_get(self.storage, req)
+        }
+    }
+
+    fn commit(
+        &mut self,
+        ctx: RpcContext<'_>,
+        req: spanner::CommitRequest,
+        sink: UnarySink<spanner::CommitResponse>,
+    ) {
+    }
+    fn heart_beat(
+        &mut self,
+        ctx: RpcContext<'_>,
+        req: spanner::HeartBeatRequest,
+        sink: UnarySink<spanner::HeartBeatResponse>,
+    ) {
+    }
+}
+
+pub fn readonly_get<E: Engine, L: LockMgr>(
+    storage: &Storage<E, L>,
+    req: spanner::GetRequest,
+) -> impl Future<Item = spanner::GetResponse, Error = Error> {
+    let resp = spanner::GetResponse::default();
+
+    let txn_id = req.txn_id;
+    let version = req.version;
+    let key = Key::from_raw(req.get_key());
+    storage.async_spanner_get(txn_id, key, version, true);
+    future::ok(resp)
+}
+
+pub fn readwrite_commit<E: Engine, L: LockMgr>(
+    storage: &Storage<E, L>,
+    req: spanner::CommitRequest,
+) -> impl Future<Item = spanner::CommitResponse, Error = Error> {
+    let resp = spanner::CommitResponse::default();
+    future::ok(resp)
+}
+
+pub fn readwrite_heartbeat<E: Engine, L: LockMgr>(
+    storage: &Storage<E, L>,
+    req: spanner::HeartBeatRequest,
+) -> impl Future<Item = spanner::HeartBeatResponse, Error = Error> {
+    let resp = spanner::HeartBeatResponse::default();
+    future::ok(resp)
+}
 
 /// Service handles the RPC messages for the `Tikv` service.
 #[derive(Clone)]

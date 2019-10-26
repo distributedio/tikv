@@ -497,6 +497,10 @@ fn gen_command_lock(latches: &Latches, cmd: &Command) -> Lock {
             let keys: Vec<&Key> = keys.iter().map(|x| &x.0).collect();
             latches.gen_lock(&keys)
         }
+        Command::AcquireSpannerLock { ref keys, .. } => {
+            let keys: Vec<&Key> = keys.iter().map(|x| &x.0).collect();
+            latches.gen_lock(&keys)
+        }
         Command::ResolveLockLite {
             ref resolve_keys, ..
         } => latches.gen_lock(resolve_keys),

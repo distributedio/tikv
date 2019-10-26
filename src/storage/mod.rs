@@ -62,6 +62,12 @@ pub fn is_short_value(value: &[u8]) -> bool {
     value.len() <= SHORT_VALUE_MAX_LEN
 }
 
+#[derive(Debug, Clone)]
+pub enum SpannerLockType {
+    Read,
+    Write,
+}
+
 /// A row mutation.
 #[derive(Debug, Clone)]
 pub enum Mutation {
@@ -151,6 +157,14 @@ pub enum Command {
         start_ts: u64,
         options: Options,
     },
+
+    AcquireSpannerLock {
+        ctx: Context,
+        keys: Vec<(Key, bool)>,
+        lock_type: SpannerLockType,
+        txn_id: u64,
+    },
+
     /// Commit the transaction that started at `lock_ts`.
     ///
     /// This should be following a [`Prewrite`](Command::Prewrite).
@@ -853,6 +867,15 @@ impl<E: Engine, L: LockMgr> Storage<E, L> {
     {
         // Safety: the read pools ensure that a TLS engine exists.
         unsafe { with_tls_engine(f) }
+    }
+
+    pub fn async_spanner_get(
+        &self,
+        txn_id: u64,
+        key: Key,
+        version: u64,
+        readonly: bool,
+    ) -> impl Future<Item = Option<Value>, Error = Error> {
     }
 
     /// Get value of the given key from a snapshot.
