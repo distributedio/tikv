@@ -1,6 +1,7 @@
 // Copyright 2016 TiKV Project Authors. Licensed under Apache-2.0.
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::usize;
@@ -30,6 +31,43 @@ impl Latch {
         }
     }
 }
+/// Spanner RW lock
+#[derive(Clone)]
+enum SpannerLockKind {
+    Read,
+    Write,
+}
+
+/// LockState store the state of a lock
+#[derive(Clone)]
+pub struct SpannerLockState {
+    pub txn_id: u64,
+    pub slot: usize,
+    pub kind: SpannerLockKind,
+}
+
+// Spanner lock
+#[derive(Clone)]
+pub struct SpannerLock {
+    /// Saves the lock states for spanner locks
+    pub required_spanner_slots: Vec<SpannerLockState>,
+
+    /// The number of latches that the command has acquired.
+    pub owned_count: usize,
+}
+
+impl SpannerLock {
+    pub fn new(required_spanner_slots: Vec<SpannerLockState>) -> SpannerLock {
+        SpannerLock {
+            required_spanner_slots: required_spanner_slots,
+            owned_count: 0,
+        }
+    }
+
+    pub fn acquired(&self) -> bool {
+        self.required_spanner_slots.len() == self.owned_count
+    }
+}
 
 /// Lock required for a command.
 #[derive(Clone)]
@@ -57,6 +95,156 @@ impl Lock {
 
     pub fn is_write_lock(&self) -> bool {
         !self.required_slots.is_empty()
+    }
+}
+
+pub struct SpannerLatch {
+    readers: Vec<u64>,
+    writer: u64,
+}
+impl SpannerLatch {
+    pub fn new() -> SpannerLatch {
+        SpannerLatch {
+            readers: Vec::new(),
+            writer: 0,
+        }
+    }
+}
+enum LockPhase {
+    Extending,
+    Locked,
+}
+pub struct TxnState {
+    phase: LockPhase,
+    expire_at: u64,
+}
+
+pub struct SpannerLatches {
+    txns: HashMap<u64, TxnState>,
+    slots: Vec<SpannerLatch>,
+    size: usize,
+}
+
+impl SpannerLatches {
+    pub fn new(size: usize) -> SpannerLatches {
+        let size = usize::next_power_of_two(size);
+        let mut slots = Vec::with_capacity(size);
+        let mut txns = HashMap::new();
+        (0..size).for_each(|_| slots.push(SpannerLatch::new()));
+        SpannerLatches { txns, slots, size }
+    }
+    pub fn is_locked<H>(&self, txn_id: u64, key: &H) -> bool
+    where
+        H: Hash,
+    {
+        let slot = self.calc_slot(key);
+        let mut latch = self.slots[slot];
+        if latch.writer == txn_id {
+            return true;
+        }
+        for reader in latch.readers {
+            if reader == txn_id {
+                return true;
+            }
+        }
+        return false;
+    }
+    pub fn acquire<H>(&self, txn_id: u64, key: &H, kind: SpannerLockKind, finished: bool) -> bool
+    where
+        H: Hash,
+    {
+        let slot = self.calc_slot(key);
+        let mut latch = self.slots[slot];
+        match kind {
+            SpannerLockKind::Read => {
+                if latch.writer > 0 {
+                    match self.txns[&latch.writer].phase {
+                        LockPhase::Locked => {
+                            return false;
+                        }
+                        LockPhase::Extending => {}
+                    }
+                    if txn_id < latch.writer {
+                        latch.writer = txn_id;
+                        if finished {
+                            self.txns[&txn_id].phase = LockPhase::Locked;
+                        }
+                        return true;
+                    }
+                    false
+                } else {
+                    latch.readers.push(txn_id);
+                    if finished {
+                        self.txns[&txn_id].phase = LockPhase::Locked;
+                    }
+                    true
+                }
+            }
+            SpannerLockKind::Write => {
+                if latch.writer > txn_id {
+                    if let LockPhase::Locked = self.txns[&latch.writer].phase {
+                        return false;
+                    }
+                    latch.writer = txn_id;
+                    if finished {
+                        self.txns[&txn_id].phase = LockPhase::Locked;
+                    }
+                    return true;
+                } else if latch.writer > 0 {
+                    return false;
+                }
+
+                if latch.readers.len() == 0 {
+                    latch.writer = txn_id;
+                    if finished {
+                        self.txns[&txn_id].phase = LockPhase::Locked;
+                    }
+                    return true;
+                }
+
+                for reader in latch.readers {
+                    if reader < txn_id {
+                        return false;
+                    }
+                    if let LockPhase::Locked = self.txns[&reader].phase {
+                        return false;
+                    }
+                }
+                latch.writer = txn_id;
+                if finished {
+                    self.txns[&txn_id].phase = LockPhase::Locked;
+                }
+                latch.readers = Vec::new();
+                return true;
+            }
+        }
+    }
+
+    pub fn release<H>(&self, txn_id: u64, key: &H)
+    where
+        H: Hash,
+    {
+        let slot = self.calc_slot(key);
+        let mut latch = self.slots[slot];
+        if latch.writer == txn_id {
+            latch.writer = 0;
+            return;
+        }
+        for i in 0..latch.readers.len() {
+            if latch.readers[i] == txn_id {
+                latch.readers.remove(i);
+                break;
+            }
+        }
+    }
+    /// Calculates the slot ID by hashing the `key`.
+    fn calc_slot<H>(&self, key: &H) -> usize
+    where
+        H: Hash,
+    {
+        let mut s = DefaultHasher::new();
+        key.hash(&mut s);
+        (s.finish() as usize) & (self.size - 1)
     }
 }
 
@@ -90,6 +278,48 @@ impl Latches {
         slots.sort();
         slots.dedup();
         Lock::new(slots)
+    }
+
+    pub fn gen_spanner_lock<H>(
+        &self,
+        txn_id: u64,
+        keys: &[H],
+        kinds: Vec<SpannerLockKind>,
+    ) -> SpannerLock
+    where
+        H: Hash,
+    {
+        let states: Vec<SpannerLockState> = Vec::new();
+        for i in 0..keys.len() {
+            let slot = self.calc_slot(&keys[i]);
+            let kind = kinds[i];
+            states.push(SpannerLockState { txn_id, slot, kind });
+        }
+        SpannerLock::new(states)
+    }
+
+    pub fn acquire_spanner(&self, lock: &mut SpannerLock, who: u64) -> bool {
+        let mut acquired_count: usize = 0;
+        for state in &lock.required_spanner_slots[lock.owned_count..] {
+            let mut latch = self.slots[state.slot].lock();
+            let front = latch.waiting.front().cloned();
+            match front {
+                Some(cid) => {
+                    if cid == who {
+                        acquired_count += 1;
+                    } else {
+                        latch.waiting.push_back(who);
+                        break;
+                    }
+                }
+                None => {
+                    latch.waiting.push_back(who);
+                    acquired_count += 1;
+                }
+            }
+        }
+        lock.owned_count += acquired_count;
+        lock.acquired()
     }
 
     /// Tries to acquire the latches specified by the `lock` for command with ID `who`.

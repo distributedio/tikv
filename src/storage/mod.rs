@@ -159,10 +159,8 @@ pub enum Command {
     },
 
     AcquireSpannerLock {
-        ctx: Context,
-        keys: Vec<(Key, bool)>,
-        lock_type: SpannerLockType,
         txn_id: u64,
+        keys: Vec<(Key, bool)>,
     },
 
     /// Commit the transaction that started at `lock_ts`.
@@ -1151,6 +1149,29 @@ impl<E: Engine, L: LockMgr> Storage<E, L> {
         };
         self.schedule(cmd, StorageCb::Booleans(callback))?;
         KV_COMMAND_COUNTER_VEC_STATIC.prewrite.inc();
+        Ok(())
+    }
+
+    /// Acquire a spanner lock on keys
+    pub fn async_acquire_spanner_lock(
+        &self,
+        keys: Vec<(Key, bool)>,
+        txn_id: u64,
+        version: u64,
+        callback: Callback<Vec<Result<()>>>,
+    ) -> Result<()> {
+        for k in &keys {
+            let key_size = k.0.as_encoded().len();
+            if key_size > self.max_key_size {
+                callback(Err(Error::KeyTooLarge(key_size, self.max_key_size)));
+                return Ok(());
+            }
+        }
+        let cmd = Command::AcquireSpannerLock{
+            txn_id,
+            keys,
+        }
+        self.schedule(cmd, StorageCb::Booleans(callback))?;
         Ok(())
     }
 

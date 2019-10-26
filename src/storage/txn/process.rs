@@ -604,12 +604,7 @@ fn process_write_impl<S: Snapshot, L: LockMgr>(
                 (pr, vec![], 0, ctx, Some((lock, options.is_first_lock)))
             }
         }
-        Command::AcquireSpannerLock {
-            ctx,
-            keys,
-            lock_type,
-            txn_id,
-        } => {
+        Command::AcquireSpannerLock { txn_id, keys } => {
             // nothing to do here
             (
                 ProcessResult::MultiRes { results: vec![] },

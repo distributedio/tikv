@@ -125,9 +125,9 @@ pub fn readonly_get<E: Engine, L: LockMgr>(
 }
 
 pub enum Operation {
-    Read(Key),
-    Put(Key, Vec<u8>),
-    Delete(Key),
+    Read(Vec<u8>),
+    Put(Vec<u8>, Vec<u8>),
+    Delete(Vec<u8>),
 }
 
 pub fn readwrite_commit<E: Engine, L: LockMgr>(
@@ -159,8 +159,12 @@ pub fn coordinator_commit<E: Engine, L: LockMgr>(
     for op in operations {
         match op {
             Operation::Read(key) => {}
-            Operation::Put(key, val) => {}
-            Operation::Delete(key) => {}
+            Operation::Put(key, val) => {
+                keys.push(key);
+            }
+            Operation::Delete(key) => {
+                keys.push(key);
+            }
         }
     }
 
