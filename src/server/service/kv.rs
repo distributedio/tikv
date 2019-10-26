@@ -27,13 +27,14 @@ use kvproto::errorpb::{Error as RegionError, ServerIsBusy};
 use kvproto::kvrpcpb::{self, *};
 use kvproto::raft_cmdpb::{CmdType, RaftCmdRequest, RaftRequestHeader, Request as RaftRequest};
 use kvproto::raft_serverpb::*;
-use kvproto::spannerpb as spanner;
 use kvproto::tikvpb::*;
 use prometheus::HistogramTimer;
 use tikv_util::collections::HashMap;
 use tikv_util::future::{paired_future_callback, AndThenWith};
 use tikv_util::mpsc::batch::{unbounded, BatchReceiver, Sender};
 use tikv_util::worker::Scheduler;
+
+use kvproto::spannerpb as spanner;
 
 const SCHEDULER_IS_BUSY: &str = "scheduler is busy";
 const GC_WORKER_IS_BUSY: &str = "gc worker is busy";
@@ -89,7 +90,7 @@ impl<T: RaftStoreRouter + 'static, E: Engine, L: LockMgr> spanner::Spanner
     ) {
         let readonly = req.read_only;
         if readonly {
-            readonly_get(self.storage, req)
+            readonly_get(&self.storage, req);
         }
     }
 
@@ -122,12 +123,49 @@ pub fn readonly_get<E: Engine, L: LockMgr>(
     future::ok(resp)
 }
 
+pub enum Operation{
+    Read(key),
+    Put(key, val),
+    Delete(key),
+}
+
 pub fn readwrite_commit<E: Engine, L: LockMgr>(
     storage: &Storage<E, L>,
     req: spanner::CommitRequest,
 ) -> impl Future<Item = spanner::CommitResponse, Error = Error> {
+    let myself = "127.0.0.1"
     let resp = spanner::CommitResponse::default();
+
+    let txn_id = req.txn_id;
+    let operations = req.operations;
+    let coordinator = req.coordinator_id;
+    let participants = req.participant_ids;
+    if coordinator == myself{
+        //wait prepare
+
+    }
+
     future::ok(resp)
+}
+
+pub fn coordinator_commit<E: Engine, L: LockMgr>(
+    storage:  &Storage<E, L>,
+    txn_id: u64,
+    operations: Vec<Operation>,
+    coordinator: Vec<u8>,
+    participants: Vec<Vec<u8>>,
+)->impl Future<Item = spanner::CommitResponse, Error = Error>{
+    let keys :Vec<Vec<u8>> = Vec::new();
+    for op in operations{
+        match op{
+            Operation::Put(key, val) =>{
+
+            }
+            Operation::Delete(key) =>{
+
+            }
+        }
+    }
 }
 
 pub fn readwrite_heartbeat<E: Engine, L: LockMgr>(

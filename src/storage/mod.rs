@@ -24,7 +24,7 @@ use std::{cmp, error, u64};
 use engine::{IterOption, DATA_KEY_PREFIX_LEN};
 use futures::{future, Future};
 use kvproto::errorpb;
-use kvproto::kvrpcpb::{CommandPri, Context, KeyRange, LockInfo};
+use kvproto::kvrpcpb::{CommandPri, Context, IsolationLevel, KeyRange, LockInfo};
 
 use tikv_util::collections::HashMap;
 
@@ -876,6 +876,25 @@ impl<E: Engine, L: LockMgr> Storage<E, L> {
         version: u64,
         readonly: bool,
     ) -> impl Future<Item = Option<Value>, Error = Error> {
+        let priority = get_priority_tag(CommandPri::Normal);
+        let res = self.get_read_pool(priority).spawn_handle(move || {
+            Self::with_tls_engine(|engine| {
+                let ctx = Context::default();
+                Self::async_snapshot(engine, &ctx).and_then(move |snapshot: E::Snap| {
+                    let mut statistics = Statistics::default();
+                    let snap_store =
+                        SnapshotStore::new(snapshot, version, IsolationLevel::Si, false);
+                    // TODO Tsafe
+                    snap_store
+                        .get(&key, &mut statistics)
+                        // map storage::txn::Error -> storage::Error
+                        .map_err(Error::from)
+                })
+            })
+        });
+        future::result(res)
+            .map_err(|_| Error::SchedTooBusy)
+            .flatten()
     }
 
     /// Get value of the given key from a snapshot.
